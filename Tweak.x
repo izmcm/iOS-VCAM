@@ -3,19 +3,18 @@
 #import <AVFoundation/AVFoundation.h>
 // #import "util.h"
 
-static NSFileManager *g_fileManager = nil; // 文件管理对象
-static UIPasteboard *g_pasteboard = nil; // 剪贴板对象
-static BOOL g_canReleaseBuffer = YES; // 当前是否可以释放buffer
-static BOOL g_bufferReload = YES; // 是否需要立即重新刷新视频文件
-static AVSampleBufferDisplayLayer *g_previewLayer = nil; // 原生相机预览
-static NSTimeInterval g_refreshPreviewByVideoDataOutputTime = 0; // 如果存在 VideoDataOutput, 预览画面会同步VideoDataOutput的画面, 如果没有则会直接读取视频显示
+static NSFileManager *g_fileManager = nil; // File manager object
+static UIPasteboard *g_pasteboard = nil; // Pasteboard object
+static BOOL g_canReleaseBuffer = YES; // Whether the buffer can be released
+static BOOL g_bufferReload = YES; // Whether to immediately reload the video file
+static AVSampleBufferDisplayLayer *g_previewLayer = nil; // Native camera preview
+static NSTimeInterval g_refreshPreviewByVideoDataOutputTime = 0; // If VideoDataOutput exists, preview syncs with it; otherwise reads video directly
 static BOOL g_cameraRunning = NO;
-static NSString *g_cameraPosition = @"B"; // B 为后置摄像头、F 为前置摄像头
-static AVCaptureVideoOrientation g_photoOrientation = AVCaptureVideoOrientationPortrait; // 视频的方向
+static NSString *g_cameraPosition = @"B"; // B for back camera, F for front camera
+static AVCaptureVideoOrientation g_photoOrientation = AVCaptureVideoOrientationPortrait; // Video orientation
 
-NSString *g_isMirroredMark = @"/var/mobile/Library/Caches/vcam_is_mirrored_mark";
-NSString *g_tempFile = @"/var/mobile/Library/Caches/temp.mov"; // 临时文件位置
-
+NSString *g_isMirroredMark = @"/var/tmp/vcam_is_mirrored_mark";
+NSString *g_tempFile = @"/var/tmp/temp.mov"; // Temporary file location
 
 @interface GetFrame : NSObject
 + (CMSampleBufferRef _Nullable)getCurrentFrame:(CMSampleBufferRef) originSampleBuffer :(BOOL)forceReNew;
@@ -23,13 +22,11 @@ NSString *g_tempFile = @"/var/mobile/Library/Caches/temp.mov"; // 临时文件�
 @end
 
 @implementation GetFrame
-+ (CMSampleBufferRef _Nullable)getCurrentFrame:(CMSampleBufferRef _Nullable) originSampleBuffer :(BOOL)forceReNew{
++ (CMSampleBufferRef _Nullable)getCurrentFrame:(CMSampleBufferRef _Nullable) originSampleBuffer :(BOOL)forceReNew {
     static AVAssetReader *reader = nil;
-    // static AVAssetReaderTrackOutput *trackout = nil;
     static AVAssetReaderTrackOutput *videoTrackout_32BGRA = nil;
     static AVAssetReaderTrackOutput *videoTrackout_420YpCbCr8BiPlanarVideoRange = nil;
     static AVAssetReaderTrackOutput *videoTrackout_420YpCbCr8BiPlanarFullRange = nil;
-    // static AVAssetReaderTrackOutput *audioTrackout_pcm = nil;
 
     static CMSampleBufferRef sampleBuffer = nil;
 
@@ -37,36 +34,26 @@ NSString *g_tempFile = @"/var/mobile/Library/Caches/temp.mov"; // 临时文件�
     CMFormatDescriptionRef formatDescription = nil;
     CMMediaType mediaType = -1;
     CMMediaType subMediaType = -1;
-    CMVideoDimensions dimensions;
+    // CMVideoDimensions dimensions;
+
     if (originSampleBuffer != nil) {
         formatDescription = CMSampleBufferGetFormatDescription(originSampleBuffer);
         mediaType = CMFormatDescriptionGetMediaType(formatDescription);
         subMediaType = CMFormatDescriptionGetMediaSubType(formatDescription);
-        dimensions = CMVideoFormatDescriptionGetDimensions(formatDescription);
+        // dimensions = CMVideoFormatDescriptionGetDimensions(formatDescription);
         if (mediaType != kCMMediaType_Video) {
-            // if (mediaType == kCMMediaType_Audio && subMediaType == kAudioFormatLinearPCM) {
-            //     if (reader != nil && audioTrackout_pcm != nil && [reader status] == AVAssetReaderStatusReading) {
-            //         NSLog(@"ok");
-                    
-            //         static CMSampleBufferRef audioBuffer = nil;
-            //         if (audioBuffer != nil) CFRelease(audioBuffer);
-            //         audioBuffer = [audioTrackout_pcm copyNextSampleBuffer];
-            //         NSLog(@"audioBuffer = %@", audioBuffer);
-            //         // return audioBuffer;
-            //     }
-            // }
-            // @see https://developer.apple.com/documentation/coremedia/cmmediatype?language=objc
             return originSampleBuffer;
         }
     }
 
-    // 没有替换视频则返回空以使用原来的数据
-    if ([g_fileManager fileExistsAtPath:g_tempFile] == NO) return nil;
-    if (sampleBuffer != nil && !g_canReleaseBuffer && CMSampleBufferIsValid(sampleBuffer) && forceReNew != YES) return sampleBuffer; // 不能释放buffer时返回上一个buffer
+    // If no replacement video, return originSampleBuffer
+    if ([g_fileManager fileExistsAtPath:g_tempFile] == NO) return originSampleBuffer;
 
+    // Return previous buffer when buffer cannot be released
+    if (sampleBuffer != nil && !g_canReleaseBuffer && CMSampleBufferIsValid(sampleBuffer) && forceReNew != YES) return sampleBuffer; 
 
     static NSTimeInterval renewTime = 0;
-    // 选择了新的替换视频
+    // New replacement video selected
     if ([g_fileManager fileExistsAtPath:[NSString stringWithFormat:@"%@.new", g_tempFile]]) {
         NSTimeInterval nowTime = [[NSDate date] timeIntervalSince1970];
         if (nowTime - renewTime > 3) {
@@ -77,86 +64,73 @@ NSString *g_tempFile = @"/var/mobile/Library/Caches/temp.mov"; // 临时文件�
 
     if (g_bufferReload) {
         g_bufferReload = NO;
+        NSLog(@"[VCAM DEBUG] Reloading video from: %@", g_tempFile);
         @try{
-            // AVAsset *asset = [AVAsset assetWithURL: [NSURL URLWithString:downloadFilePath]];
-            AVAsset *asset = [AVAsset assetWithURL: [NSURL URLWithString:[NSString stringWithFormat:@"file://%@", g_tempFile]]];
-            reader = [AVAssetReader assetReaderWithAsset:asset error:nil];
+            AVURLAsset *asset = [[AVURLAsset alloc] initWithURL:[NSURL fileURLWithPath:g_tempFile] options:nil];
+            NSLog(@"[VCAM DEBUG] Asset playable: %@ duration: %f", asset.playable ? @"YES" : @"NO", CMTimeGetSeconds(asset.duration));
             
-            AVAssetTrack *videoTrack = [[asset tracksWithMediaType:AVMediaTypeVideo] firstObject]; // 获取轨道
-            // kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange  : YUV420 用于标清视频[420v]
-            // kCVPixelFormatType_420YpCbCr8BiPlanarFullRange   : YUV422 用于高清视频[420f] 
-            // kCVPixelFormatType_32BGRA : 输出的是BGRA的格式，适用于OpenGL和CoreImage
-
-            // OSType type = kCVPixelFormatType_32BGRA;
-            // NSDictionary *readerOutputSettings = @{(id)kCVPixelBufferPixelFormatTypeKey:@(type)}; // 将视频帧解压缩为 32 位 BGRA 格式
-            // trackout = [[AVAssetReaderTrackOutput alloc] initWithTrack:videoTrack outputSettings:readerOutputSettings];
+            NSError *readerError = nil;
+            reader = [AVAssetReader assetReaderWithAsset:asset error:&readerError];
+            if (readerError) {
+                NSLog(@"[VCAM DEBUG] Error creating AVAssetReader: %@", readerError);
+            }
+            
+            NSLog(@"[VCAM DEBUG] AVAssetReader created: %@", reader);
+            AVAssetTrack *videoTrack = [[asset tracksWithMediaType:AVMediaTypeVideo] firstObject];
 
             videoTrackout_32BGRA = [[AVAssetReaderTrackOutput alloc] initWithTrack:videoTrack outputSettings:@{(id)kCVPixelBufferPixelFormatTypeKey:@(kCVPixelFormatType_32BGRA)}];
             videoTrackout_420YpCbCr8BiPlanarVideoRange = [[AVAssetReaderTrackOutput alloc] initWithTrack:videoTrack outputSettings:@{(id)kCVPixelBufferPixelFormatTypeKey:@(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)}];
             videoTrackout_420YpCbCr8BiPlanarFullRange = [[AVAssetReaderTrackOutput alloc] initWithTrack:videoTrack outputSettings:@{(id)kCVPixelBufferPixelFormatTypeKey:@(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)}];
             
-            // AVAssetTrack *audioTrack = [[asset tracksWithMediaType:AVMediaTypeAudio] firstObject]; // 获取轨道
-            // audioTrackout_pcm = [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:audioTrack outputSettings:@{AVFormatIDKey : [NSNumber numberWithInt:kAudioFormatLinearPCM]}];
-            
-            
             [reader addOutput:videoTrackout_32BGRA];
             [reader addOutput:videoTrackout_420YpCbCr8BiPlanarVideoRange];
             [reader addOutput:videoTrackout_420YpCbCr8BiPlanarFullRange];
 
-            // [reader addOutput:audioTrackout_pcm];
-
             [reader startReading];
-            // NSLog(@"这是初始化读取");
+            NSLog(@"[VCAM DEBUG] AVAssetReader status: %ld", (long)[reader status]);
         }@catch(NSException *except) {
-            NSLog(@"初始化读取视频出错:%@", except);
+            NSLog(@"Error initializing video read: %@", except);
         }
     }
-    // NSLog(@"刷新了");
 
     CMSampleBufferRef videoTrackout_32BGRA_Buffer = [videoTrackout_32BGRA copyNextSampleBuffer];
     CMSampleBufferRef videoTrackout_420YpCbCr8BiPlanarVideoRange_Buffer = [videoTrackout_420YpCbCr8BiPlanarVideoRange copyNextSampleBuffer];
     CMSampleBufferRef videoTrackout_420YpCbCr8BiPlanarFullRange_Buffer = [videoTrackout_420YpCbCr8BiPlanarFullRange copyNextSampleBuffer];
 
-    CMSampleBufferRef newsampleBuffer = nil;
-    // 根据subMediaTyp拷贝对应的类型
+    CMSampleBufferRef newSampleBuffer = nil;
+    // Copy corresponding type based on subMediaType
     switch(subMediaType) {
         case kCVPixelFormatType_32BGRA:
-            // NSLog(@"--->kCVPixelFormatType_32BGRA");
-            CMSampleBufferCreateCopy(kCFAllocatorDefault, videoTrackout_32BGRA_Buffer, &newsampleBuffer);
-            break;
+        //   NSLog(@"[VCAM DEBUG] --->kCVPixelFormatType_32BGRA");
+          CMSampleBufferCreateCopy(kCFAllocatorDefault, videoTrackout_32BGRA_Buffer, &newSampleBuffer);
+          break;
         case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
-            // NSLog(@"--->kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange");
-            CMSampleBufferCreateCopy(kCFAllocatorDefault, videoTrackout_420YpCbCr8BiPlanarVideoRange_Buffer, &newsampleBuffer);
+            // NSLog(@"[VCAM DEBUG] --->kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange");
+            CMSampleBufferCreateCopy(kCFAllocatorDefault, videoTrackout_420YpCbCr8BiPlanarVideoRange_Buffer, &newSampleBuffer);
             break;
         case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
-            // NSLog(@"--->kCVPixelFormatType_420YpCbCr8BiPlanarFullRange");
-            CMSampleBufferCreateCopy(kCFAllocatorDefault, videoTrackout_420YpCbCr8BiPlanarFullRange_Buffer, &newsampleBuffer);
+            // NSLog(@"[VCAM DEBUG] --->kCVPixelFormatType_420YpCbCr8BiPlanarFullRange");
+            CMSampleBufferCreateCopy(kCFAllocatorDefault, videoTrackout_420YpCbCr8BiPlanarFullRange_Buffer, &newSampleBuffer);
             break;
         default:
-            CMSampleBufferCreateCopy(kCFAllocatorDefault, videoTrackout_32BGRA_Buffer, &newsampleBuffer);
+            // NSLog(@"[VCAM DEBUG] --->default kCVPixelFormatType_32BGRA");
+            CMSampleBufferCreateCopy(kCFAllocatorDefault, videoTrackout_32BGRA_Buffer, &newSampleBuffer);
     }
-    // 释放内存
+
     if (videoTrackout_32BGRA_Buffer != nil) CFRelease(videoTrackout_32BGRA_Buffer);
     if (videoTrackout_420YpCbCr8BiPlanarVideoRange_Buffer != nil) CFRelease(videoTrackout_420YpCbCr8BiPlanarVideoRange_Buffer);
     if (videoTrackout_420YpCbCr8BiPlanarFullRange_Buffer != nil) CFRelease(videoTrackout_420YpCbCr8BiPlanarFullRange_Buffer);
 
-    if (newsampleBuffer == nil) {
+    if (newSampleBuffer == nil) {
         g_bufferReload = YES;
-    }else {
+    } else {
         if (sampleBuffer != nil) CFRelease(sampleBuffer);
+
+        // Copy metadata info from original buffer if exists, otherwise some apps may crash due to missing metadata
         if (originSampleBuffer != nil) {
-
-            // NSLog(@"---->%@", originSampleBuffer);
-            // NSLog(@"====>%@", formatDescription);
-
             CMSampleBufferRef copyBuffer = nil;
             
-            CVImageBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(newsampleBuffer);
-
-            // NSLog(@"width:%ld height:%ld", CVPixelBufferGetWidth(pixelBuffer), CVPixelBufferGetHeight(pixelBuffer));
-            // NSLog(@"width:%d height:%d ===", dimensions.width, dimensions.height);
-
-            // TODO:: 滤镜
+            CVImageBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(newSampleBuffer);
 
             CMSampleTimingInfo sampleTime = {
                 .duration = CMSampleBufferGetDuration(originSampleBuffer),
@@ -166,50 +140,42 @@ NSString *g_tempFile = @"/var/mobile/Library/Caches/temp.mov"; // 临时文件�
 
             CMVideoFormatDescriptionRef videoInfo = nil;
             CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, pixelBuffer, &videoInfo);
-            
-            // 如果传了这个buffer则需要按照这个buffer去生成
-            // CMSampleBufferSetOutputPresentationTimeStamp(sampleBuffer, [[NSDate date] timeIntervalSince1970] * 1000);
-
-            // CVImage Buffer
             CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault, pixelBuffer, true, nil, nil, videoInfo, &sampleTime, &copyBuffer);
-            // NSLog(@"cvimagebuffer ->%@", copyBuffer);
 
             if (copyBuffer != nil) {
                 CFDictionaryRef exifAttachments = CMGetAttachment(originSampleBuffer, (CFStringRef)@"{Exif}", NULL);
                 CFDictionaryRef TIFFAttachments = CMGetAttachment(originSampleBuffer, (CFStringRef)@"{TIFF}", NULL);
 
-                // 设定EXIF信息
                 if (exifAttachments != nil) CMSetAttachment(copyBuffer, (CFStringRef)@"{Exif}", exifAttachments, kCMAttachmentMode_ShouldPropagate);
-                // 设定TIFF信息
-                if (exifAttachments != nil) CMSetAttachment(copyBuffer, (CFStringRef)@"{TIFF}", TIFFAttachments, kCMAttachmentMode_ShouldPropagate);
+                if (TIFFAttachments != nil) CMSetAttachment(copyBuffer, (CFStringRef)@"{TIFF}", TIFFAttachments, kCMAttachmentMode_ShouldPropagate);
                 
-                // NSLog(@"设置了exit信息 %@", CMGetAttachment(copyBuffer, (CFStringRef)@"{TIFF}", NULL));
                 sampleBuffer = copyBuffer;
-                // NSLog(@"--->GetDataBuffer = %@", CMSampleBufferGetDataBuffer(copyBuffer));
             }
-            CFRelease(newsampleBuffer);
-            // sampleBuffer = newsampleBuffer;
-        }else {
-            // 直接从视频读取的 kCVPixelFormatType_32BGRA 
-            sampleBuffer = newsampleBuffer;
+            CFRelease(newSampleBuffer);
+        } else {
+            sampleBuffer = newSampleBuffer;
         }
     }
     if (CMSampleBufferIsValid(sampleBuffer)) return sampleBuffer;
-    return nil;
+    return originSampleBuffer;
 }
-+(UIWindow*)getKeyWindow{
-    // need using [GetFrame getKeyWindow].rootViewController
-    UIWindow *keyWindow = nil;
-    if (keyWindow == nil) {
-        NSArray *windows = UIApplication.sharedApplication.windows;
-        for(UIWindow *window in windows){
-            if(window.isKeyWindow) {
-                keyWindow = window;
-                break;
-            }
+
++ (UIWindow *)getKeyWindow {
+  UIWindow *keyWindow = nil;
+  for (UIWindowScene *windowScene in [UIApplication sharedApplication]
+           .connectedScenes) {
+    if (windowScene.activationState == UISceneActivationStateForegroundActive) {
+      for (UIWindow *window in windowScene.windows) {
+        if (window.isKeyWindow) {
+          keyWindow = window;
+          break;
         }
+      }
+      if (keyWindow)
+        break;
     }
-    return keyWindow;
+  }
+  return keyWindow;
 }
 @end
 
@@ -218,35 +184,34 @@ CALayer *g_maskLayer = nil;
 %hook AVCaptureVideoPreviewLayer
 - (void)addSublayer:(CALayer *)layer{
     %orig;
-    // self.opacity = 0;
-    // self.borderColor = [UIColor blackColor].CGColor;
 
     static CADisplayLink *displayLink = nil;
     if (displayLink == nil) {
+        NSLog(@"[VCAM DEBUG] Creating CADisplayLink for preview refresh");
         displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(step:)];
         [displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
     }
 
-    // 播放条目
     if (![[self sublayers] containsObject:g_previewLayer]) {
         g_previewLayer = [[AVSampleBufferDisplayLayer alloc] init];
 
-        // black mask
         g_maskLayer = [CALayer new];
         g_maskLayer.backgroundColor = [UIColor blackColor].CGColor;
         [self insertSublayer:g_maskLayer above:layer];
         [self insertSublayer:g_previewLayer above:g_maskLayer];
 
-        // layer size init
         dispatch_async(dispatch_get_main_queue(), ^{
-            g_previewLayer.frame = [UIApplication sharedApplication].keyWindow.bounds;
-            g_maskLayer.frame = [UIApplication sharedApplication].keyWindow.bounds;
+            g_previewLayer.frame = [GetFrame getKeyWindow].bounds;
+            g_maskLayer.frame = [GetFrame getKeyWindow].bounds;
         });
-        // NSLog(@"添加了 %@", [self sublayers]);
     }
 }
 %new
 -(void)step:(CADisplayLink *)sender{
+    static int logCounter = 0;
+    if (logCounter++ % 100 == 0) { // Log every 100 frames to avoid spam
+        NSLog(@"[VCAM DEBUG] step called - temp file exists: %@ camera running: %@", [g_fileManager fileExistsAtPath:g_tempFile] ? @"YES" : @"NO", g_cameraRunning ? @"YES" : @"NO");
+    }
     if ([g_fileManager fileExistsAtPath:g_tempFile]) {
         if (g_maskLayer != nil) g_maskLayer.opacity = 1;
         if (g_previewLayer != nil) {
@@ -280,24 +245,25 @@ CALayer *g_maskLayer = nil;
                 g_previewLayer.transform = self.transform;
         }
 
-        // 防止和VideoOutput冲突
+        // Prevent conflict with VideoOutput
         static NSTimeInterval refreshTime = 0;
         NSTimeInterval nowTime = [[NSDate date] timeIntervalSince1970] * 1000;
         if (nowTime - g_refreshPreviewByVideoDataOutputTime > 1000) {
-            // 帧率控制
+            // Frame rate control
             static CMSampleBufferRef copyBuffer = nil;
             if (nowTime - refreshTime > 1000 / 33 && g_previewLayer.readyForMoreMediaData) {
                 refreshTime = nowTime;
                 g_photoOrientation = -1;
-                // NSLog(@"-==-·刷新了 %f", nowTime);
+                // NSLog(@"-==-·Refreshed %f", nowTime);
                 CMSampleBufferRef newBuffer = [GetFrame getCurrentFrame:nil :NO];
+                if (logCounter % 100 == 0) NSLog(@"[VCAM DEBUG] Got frame buffer: %@", newBuffer != nil ? @"YES" : @"NO");
                 if (newBuffer != nil) {
                     [g_previewLayer flush];
                     if (copyBuffer != nil) CFRelease(copyBuffer);
                     CMSampleBufferCreateCopy(kCFAllocatorDefault, newBuffer, &copyBuffer);
                     if (copyBuffer != nil) [g_previewLayer enqueueSampleBuffer:copyBuffer];
 
-                    // camera info
+                    // Camera info
                     NSDate *datenow = [NSDate date];
                     NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
                     [formatter setDateFormat:@"YYYY-MM-dd HH:mm:ss"];
@@ -320,84 +286,38 @@ CALayer *g_maskLayer = nil;
 
 %hook AVCaptureSession
 -(void) startRunning {
+    NSLog(@"[VCAM DEBUG] Camera starting - temp file exists: %@", [g_fileManager fileExistsAtPath:g_tempFile] ? @"YES" : @"NO");
     g_cameraRunning = YES;
     g_bufferReload = YES;
     g_refreshPreviewByVideoDataOutputTime = [[NSDate date] timeIntervalSince1970] * 1000;
-	NSLog(@"开始使用摄像头了， 预设值是 %@", [self sessionPreset]);
+	NSLog(@"Camera started, preset is %@", [self sessionPreset]);
 	%orig;
 }
 -(void) stopRunning {
     g_cameraRunning = NO;
-	NSLog(@"停止使用摄像头了");
+	NSLog(@"Camera stopped");
 	%orig;
 }
 - (void)addInput:(AVCaptureDeviceInput *)input {
     if ([[input device] position] > 0) {
         g_cameraPosition = [[input device] position] == 1 ? @"B" : @"F";
     }
- 	// NSLog(@"添加了一个输入设备 %@", [[input device] activeFormat]);
+ 	// NSLog(@"Added an input device %@", [[input device] activeFormat]);
 	%orig;
 }
 - (void)addOutput:(AVCaptureOutput *)output{
-	NSLog(@"添加了一个输出设备 %@", output);
+	NSLog(@"Added an output device %@", output);
 	%orig;
-}
-%end
-
-
-%hook AVCaptureStillImageOutput
-- (void)captureStillImageAsynchronouslyFromConnection:(AVCaptureConnection *)connection completionHandler:(void (^)(CMSampleBufferRef imageDataSampleBuffer, NSError *error))handler{
-    g_canReleaseBuffer = NO;
-    NSLog(@"拍照了 %@", handler);
-    void (^newHandler)(CMSampleBufferRef imageDataSampleBuffer, NSError *error) = ^(CMSampleBufferRef imageDataSampleBuffer, NSError *error) {
-        NSLog(@"拍照调用 %@", handler);
-        CMSampleBufferRef newBuffer = [GetFrame getCurrentFrame:imageDataSampleBuffer :YES];
-        if (newBuffer != nil) {
-            imageDataSampleBuffer = newBuffer;
-        }
-        handler(imageDataSampleBuffer, error);
-        g_canReleaseBuffer = YES;
-    };
-    %orig(connection, [newHandler copy]);
-}
-// TODO:: block buffer 尚未完成所以需要这里
-+ (NSData *)jpegStillImageNSDataRepresentation:(CMSampleBufferRef)jpegSampleBuffer{
-    CMSampleBufferRef newBuffer = [GetFrame getCurrentFrame:nil :NO];
-    if (newBuffer != nil) {
-        CVImageBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(newBuffer);
-
-        CIImage *ciimage = [CIImage imageWithCVImageBuffer:pixelBuffer];
-        if (@available(iOS 11.0, *)) { // 旋转问题
-            switch(g_photoOrientation){
-                case AVCaptureVideoOrientationPortrait:
-                    ciimage = [ciimage imageByApplyingCGOrientation:kCGImagePropertyOrientationUp];break;
-                case AVCaptureVideoOrientationPortraitUpsideDown:
-                    ciimage = [ciimage imageByApplyingCGOrientation:kCGImagePropertyOrientationDown];break;
-                case AVCaptureVideoOrientationLandscapeRight:
-                    ciimage = [ciimage imageByApplyingCGOrientation:kCGImagePropertyOrientationRight];break;
-                case AVCaptureVideoOrientationLandscapeLeft:
-                    ciimage = [ciimage imageByApplyingCGOrientation:kCGImagePropertyOrientationLeft];break;
-            }
-        }
-        UIImage *uiimage = [UIImage imageWithCIImage:ciimage scale:2.0f orientation:UIImageOrientationUp];
-        if ([g_fileManager fileExistsAtPath:g_isMirroredMark]) {
-            uiimage = [UIImage imageWithCIImage:ciimage scale:2.0f orientation:UIImageOrientationUpMirrored];
-        }
-        NSData *theNewPhoto = UIImageJPEGRepresentation(uiimage, 1);
-        return theNewPhoto;
-    }
-    return %orig;
 }
 %end
 
 %hook AVCapturePhotoOutput
-// TODO:: block buffer 尚未完成所以需要这里
 + (NSData *)JPEGPhotoDataRepresentationForJPEGSampleBuffer:(CMSampleBufferRef)JPEGSampleBuffer previewPhotoSampleBuffer:(CMSampleBufferRef)previewPhotoSampleBuffer{
     CMSampleBufferRef newBuffer = [GetFrame getCurrentFrame:nil :NO];
     if (newBuffer != nil) {
         CVImageBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(newBuffer);
         CIImage *ciimage = [CIImage imageWithCVImageBuffer:pixelBuffer];
-        if (@available(iOS 11.0, *)) { // 旋转问题
+        if (@available(iOS 11.0, *)) { // Rotation issue
             switch(g_photoOrientation){
                 case AVCaptureVideoOrientationPortrait:
                     ciimage = [ciimage imageByApplyingCGOrientation:kCGImagePropertyOrientationUp];break;
@@ -436,9 +356,9 @@ CALayer *g_maskLayer = nil;
                     CMSampleBufferRef newBuffer = [GetFrame getCurrentFrame:photoSampleBuffer :NO];
                     if (newBuffer != nil) {
                         photoSampleBuffer = newBuffer;
-                        // NSLog(@"新的buffer = %@", newBuffer);
-                        // NSLog(@"旧的buffer = %@", photoSampleBuffer);
-                        // NSLog(@"旧的previewPhotoSampleBuffer = %@", previewPhotoSampleBuffer);
+                        // NSLog(@"New buffer = %@", newBuffer);
+                        // NSLog(@"Old buffer = %@", photoSampleBuffer);
+                        // NSLog(@"Old previewPhotoSampleBuffer = %@", previewPhotoSampleBuffer);
                     }
                     NSLog(@"captureOutput:didFinishProcessingPhotoSampleBuffer:previewPhotoSampleBuffer:resolvedSettings:bracketSettings:error:");
                     // photoSampleBuffer = newPhotoBuffer;
@@ -447,7 +367,7 @@ CALayer *g_maskLayer = nil;
                         original_method(self, @selector(captureOutput:didFinishProcessingPhotoSampleBuffer:previewPhotoSampleBuffer:resolvedSettings:bracketSettings:error:), output, photoSampleBuffer, previewPhotoSampleBuffer, resolvedSettings, bracketSettings, error);
                         g_canReleaseBuffer = YES;
                     }@catch(NSException *except) {
-                        NSLog(@"出错了 %@", except);
+                        NSLog(@"Error: %@", except);
                     }
                 }), (IMP*)&original_method
             );
@@ -463,7 +383,7 @@ CALayer *g_maskLayer = nil;
             );
         }
 
-        if (@available(iOS 11.0, *)){ // iOS 11 之后
+        if (@available(iOS 11.0, *)){ // iOS 11 and later
             __block void (*original_method)(id self, SEL _cmd, AVCapturePhotoOutput *captureOutput, AVCapturePhoto *photo, NSError *error) = nil;
             MSHookMessageEx(
                 [delegate class], @selector(captureOutput:didFinishProcessingPhoto:error:),
@@ -475,7 +395,7 @@ CALayer *g_maskLayer = nil;
                     g_canReleaseBuffer = NO;
                     static CMSampleBufferRef copyBuffer = nil;
 
-                    // 这里没有buffer，临时创建一个
+                    // No buffer here, create a temporary one
                     // NSLog(@"photo.pixelBuffer= %@", photo.pixelBuffer);
                     CMSampleBufferRef tempBuffer = nil;
                     CVPixelBufferRef tempPixelBuffer = photo.pixelBuffer;
@@ -484,12 +404,12 @@ CALayer *g_maskLayer = nil;
                     CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, tempPixelBuffer, &videoInfo);
                     CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault, tempPixelBuffer, true, nil, nil, videoInfo, &sampleTime, &tempBuffer);
 
-                    // 新的数据
+                    // New data
                     NSLog(@"tempbuffer = %@, photo.pixelBuffer = %@, photo.CGImageRepresentation=%@", tempBuffer, photo.pixelBuffer, photo.CGImageRepresentation);
                     CMSampleBufferRef newBuffer = [GetFrame getCurrentFrame:tempBuffer :YES];
-                    if (tempBuffer != nil) CFRelease(tempBuffer); // 释放这个临时buffer
+                    if (tempBuffer != nil) CFRelease(tempBuffer); // Release this temporary buffer
 
-                    if (newBuffer != nil) { // 如果存在新的替换数据则挂钩属性
+                    if (newBuffer != nil) { // If new replacement data exists, hook properties
                         if (copyBuffer != nil) CFRelease(copyBuffer);
                         CMSampleBufferCreateCopy(kCFAllocatorDefault, newBuffer, &copyBuffer);
 
@@ -497,13 +417,13 @@ CALayer *g_maskLayer = nil;
                         CIImage *ciimage = [CIImage imageWithCVImageBuffer:imageBuffer];
 
                         CIImage *ciimageRotate = [ciimage imageByApplyingCGOrientation:kCGImagePropertyOrientationLeft];
-                        CIContext *cicontext = [CIContext new]; // 此处旋转问题
+                        CIContext *cicontext = [CIContext new]; // Rotation issue here
                         __block CGImageRef _Nullable cgimage = [cicontext createCGImage:ciimageRotate fromRect:ciimageRotate.extent];
 
                         UIImage *uiimage = [UIImage imageWithCIImage:ciimage];
                         __block NSData *theNewPhoto = UIImageJPEGRepresentation(uiimage, 1);
 
-                        // 获取到了新的buffer之后开始挂钩属性
+                        // After getting new buffer, start hooking properties
                         __block NSData *(*fileDataRepresentationWithCustomizer)(id self, SEL _cmd, id<AVCapturePhotoFileDataRepresentationCustomizer> customizer);
                         MSHookMessageEx(
                             [photo class], @selector(fileDataRepresentationWithCustomizer:),
@@ -566,8 +486,8 @@ CALayer *g_maskLayer = nil;
                     }
                     g_canReleaseBuffer = YES;
                     
-                    // NSLog(@"原生拍照了 previewPixelBuffer = %@", photo.previewPixelBuffer );
-                    // NSLog(@"原生拍照了 fileDataRepresentatio = %@", [photo fileDataRepresentation]);
+                    // NSLog(@"Native photo taken previewPixelBuffer = %@", photo.previewPixelBuffer );
+                    // NSLog(@"Native photo taken fileDataRepresentation = %@", [photo fileDataRepresentation]);
 
                     return original_method(self, @selector(captureOutput:didFinishProcessingPhoto:error:), captureOutput, photo, error);
                 }), (IMP*)&original_method
@@ -582,7 +502,7 @@ CALayer *g_maskLayer = nil;
 
 %hook AVCaptureVideoDataOutput
 - (void)setSampleBufferDelegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)sampleBufferDelegate queue:(dispatch_queue_t)sampleBufferCallbackQueue{
-    // NSLog(@"sampleBufferDelegate--->%@", [sampleBufferDelegate class]); // TODO:: 同一个软件可能会有不同的代理对象，需要每个对象替换一次
+    // NSLog(@"sampleBufferDelegate--->%@", [sampleBufferDelegate class]); // TODO:: Same app may have different delegate objects, need to replace each one
     if (sampleBufferDelegate == nil || sampleBufferCallbackQueue == nil) return %orig;
     static NSMutableArray *hooked;
     if (hooked == nil) hooked = [NSMutableArray new];
@@ -590,19 +510,19 @@ CALayer *g_maskLayer = nil;
     if ([hooked containsObject:className] == NO) {
         [hooked addObject:className];
         __block void (*original_method)(id self, SEL _cmd, AVCaptureOutput *output, CMSampleBufferRef sampleBuffer, AVCaptureConnection *connection) = nil;
-        // NSLog(@"准备hook-->%@ %p", [sampleBufferDelegate class], original_method);
+        // NSLog(@"Ready to hook-->%@ %p", [sampleBufferDelegate class], original_method);
 
         // NSLog(@"---------> AVCaptureVideoDataOutput -> videoSettings = %@", [self videoSettings]);
-        // 先动态hook然后调用原始方法使用这个queue
+        // First dynamically hook then call original method using this queue
         MSHookMessageEx(
             [sampleBufferDelegate class], @selector(captureOutput:didOutputSampleBuffer:fromConnection:),
             imp_implementationWithBlock(^(id self, AVCaptureOutput *output, CMSampleBufferRef sampleBuffer, AVCaptureConnection *connection){
-                // NSLog(@"求求你了，出现吧! 【self = %@】 params = %p", self, original_method);
+                // NSLog(@"Please appear! [self = %@] params = %p", self, original_method);
                 g_refreshPreviewByVideoDataOutputTime = ([[NSDate date] timeIntervalSince1970]) * 1000;
 
                 CMSampleBufferRef newBuffer = [GetFrame getCurrentFrame:sampleBuffer :NO];
 
-                // 用buffer来刷新预览
+                // Use buffer to refresh preview
                 NSString *previewType = @"buffer";
                 g_photoOrientation = [connection videoOrientation];
                 if (newBuffer != nil && g_previewLayer != nil && g_previewLayer.readyForMoreMediaData) {
@@ -613,9 +533,9 @@ CALayer *g_maskLayer = nil;
 
                 static NSTimeInterval oldTime = 0;
                 NSTimeInterval nowTime = g_refreshPreviewByVideoDataOutputTime;
-                if (nowTime - oldTime > 3000) { // 3秒钟刷新一次
+                if (nowTime - oldTime > 3000) { // Refresh every 3 seconds
                     oldTime = nowTime;
-                    // camera info
+                    // Camera info
                     // NSLog(@"set camera info");
                     CMFormatDescriptionRef formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer);
                     CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(formatDescription);
@@ -641,60 +561,34 @@ CALayer *g_maskLayer = nil;
 }
 %end
 
-// 元数据
-// %hook AVCaptureMetadataOutput
-// - (void)setMetadataObjectsDelegate:(id<AVCaptureMetadataOutputObjectsDelegate>)objectsDelegate queue:(dispatch_queue_t)objectsCallbackQueue{
-//     if (objectsDelegate == nil || objectsCallbackQueue == nil) {
-//         NSLog(@"咋是空的啊 AVCaptureMetadataOutput");
-//         return %orig;
-//     }
-//     static void *(*original_method)(id self, SEL _cmd, AVCaptureOutput *output, NSArray<__kindof AVMetadataObject *> *metadataObjects, AVCaptureConnection *connection) = NULL;
-//     if (original_method == NULL) {
-//         NSLog(@"挂钩setMetadataObjectsDelegate");
-//         MSHookMessageEx(
-//             [objectsDelegate class], @selector(captureOutput:didOutputMetadataObjects:fromConnection:),
-//             imp_implementationWithBlock(^(id self, AVCaptureOutput *output, NSArray<__kindof AVMetadataObject *> *metadataObjects, AVCaptureConnection *connection){
-//                 // NSLog(@"捕获到元数据 %@", metadataObjects);
-
-//                 original_method(self, @selector(captureOutput:didOutputMetadataObjects:fromConnection:), output, metadataObjects, connection);
-//             }), (IMP*)&original_method
-//         );
-//     }
-// 	NSLog(@"AVCaptureMetadataOutput -> setMetadataObjectsDelegate [%@]   [%@]", objectsDelegate, objectsCallbackQueue);
-// 	%orig;
-// }
-// %end
-
 
 // UI
 @interface CCUIImagePickerDelegate : NSObject <UINavigationControllerDelegate,UIImagePickerControllerDelegate>
 @end
 @implementation CCUIImagePickerDelegate
-// 选择图片成功调用此方法
+// Called when image selection is successful
 - (void)imagePickerController:(UIImagePickerController *)picker didFinishPickingMediaWithInfo:(NSDictionary<NSString *,id> *)info {
     [[GetFrame getKeyWindow].rootViewController dismissViewControllerAnimated:YES completion:nil];
-    NSLog(@"%@", info);
-    // NSString *result = @"应用失败!";
-    // 选择的图片信息存储于info字典中
-    NSString *selectFile = info[@"UIImagePickerControllerMediaURL"];
+
+    NSURL *selectURL =
+        info[@"UIImagePickerControllerMediaURL"]; // Selected image info stored in info dictionary
+    NSString *selectFile = [selectURL path];
     if ([g_fileManager fileExistsAtPath:g_tempFile]) [g_fileManager removeItemAtPath:g_tempFile error:nil];
 
+    NSLog(@"[VCAM DEBUG] Selected file URL: %@ -> Path: %@", selectURL, selectFile);
     if ([g_fileManager copyItemAtPath:selectFile toPath:g_tempFile error:nil]) {
+        NSLog(@"[VCAM DEBUG] Video copied successfully to: %@", g_tempFile);
         [g_fileManager createDirectoryAtPath:[NSString stringWithFormat:@"%@.new", g_tempFile] withIntermediateDirectories:YES attributes:nil error:nil];
-        // result = @"应用成功!";
         sleep(1);
         [g_fileManager removeItemAtPath:[NSString stringWithFormat:@"%@.new", g_tempFile] error:nil];  
+    } else {
+        NSLog(@"[VCAM DEBUG] Failed to copy video!");
     }
-    // UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"VCAM" message:result preferredStyle:UIAlertControllerStyleAlert];
-    // UIAlertAction *cancel = [UIAlertAction actionWithTitle:@"oj8k" style:UIAlertActionStyleDefault handler:nil];
-    // [alertController addAction:cancel];
-    // [[GetFrame getKeyWindow].rootViewController presentViewController:alertController animated:YES completion:nil];
-
 }
-// 取消图片选择调用此方法
+
+// Called when image selection is cancelled
 - (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker {
     [[GetFrame getKeyWindow].rootViewController dismissViewControllerAnimated:YES completion:nil];
-    // selectFile = nil;
 }
 @end
 
@@ -702,73 +596,25 @@ CALayer *g_maskLayer = nil;
 // UI
 static NSTimeInterval g_volume_up_time = 0;
 static NSTimeInterval g_volume_down_time = 0;
-static NSString *g_downloadAddress = @""; // 下载地址
-static BOOL g_downloadRunning = NO; // 是否正在下载中
 
 void ui_selectVideo(){
     static CCUIImagePickerDelegate *delegate = nil;
     if (delegate == nil) delegate = [CCUIImagePickerDelegate new];
     UIImagePickerController *picker = [[UIImagePickerController alloc] init];
     picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
-    picker.mediaTypes = [NSArray arrayWithObjects:@"public.movie",/* @"public.image",*/ nil];
+    picker.mediaTypes = [NSArray arrayWithObjects:@"public.movie", nil];
     picker.videoQuality = UIImagePickerControllerQualityTypeHigh;
     if (@available(iOS 11.0, *)) picker.videoExportPreset = AVAssetExportPresetPassthrough;
-    picker.allowsEditing = YES;
+    picker.allowsEditing = NO;
     picker.delegate = delegate;
     [[GetFrame getKeyWindow].rootViewController presentViewController:picker animated:YES completion:nil];
-}
-
-@interface AVSystemController : NSObject
-+ (id)sharedAVSystemController;
-- (BOOL)getVolume:(float*)arg1 forCategory:(id)arg2;
-- (BOOL)setVolumeTo:(float)arg1 forCategory:(id)arg2;
-@end
-
-/**
- * 下载视频
- * @param bool quick 是否为便捷下载，这种情况下尽量减少弹窗
- */
-void ui_downloadVideo(){
-    if (g_downloadRunning) return;
-
-    void (^startDownload)(void) = ^{
-        g_downloadRunning = YES;
-        
-        NSString *tempPath = [NSString stringWithFormat:@"%@.downloading.mov", g_tempFile];
-
-        NSData *urlData = [NSData dataWithContentsOfURL:[NSURL URLWithString:g_downloadAddress]];
-        if ([urlData writeToFile:tempPath atomically:YES]) {
-            AVAsset *asset = [AVAsset assetWithURL: [NSURL URLWithString:[NSString stringWithFormat:@"file://%@", tempPath]]];
-            if (asset.playable) {
-                // 文件下载完成
-                if ([g_fileManager fileExistsAtPath:g_tempFile]) [g_fileManager removeItemAtPath:g_tempFile error:nil];
-                [g_fileManager moveItemAtPath:tempPath toPath:g_tempFile error:nil];
-                [[%c(AVSystemController) sharedAVSystemController] setVolumeTo:0 forCategory:@"Ringtone"];
-                // 标识视频有变动
-                [g_fileManager createDirectoryAtPath:[NSString stringWithFormat:@"%@.new", g_tempFile] withIntermediateDirectories:YES attributes:nil error:nil];
-                sleep(1);
-                [g_fileManager removeItemAtPath:[NSString stringWithFormat:@"%@.new", g_tempFile] error:nil];
-            }else {
-                if ([g_fileManager fileExistsAtPath:tempPath]) [g_fileManager removeItemAtPath:tempPath error:nil];
-            }
-        }else {
-            if ([g_fileManager fileExistsAtPath:g_tempFile]) [g_fileManager removeItemAtPath:g_tempFile error:nil];
-        }
-        [[%c(AVSystemController) sharedAVSystemController] setVolumeTo:0 forCategory:@"Ringtone"];
-        g_downloadRunning = NO;
-    };
-    dispatch_async(dispatch_queue_create("download", nil), startDownload);
 }
 
 %hook VolumeControl
 -(void)increaseVolume {
     NSTimeInterval nowtime = [[NSDate date] timeIntervalSince1970];
     if (g_volume_down_time != 0 && nowtime - g_volume_down_time < 1) {
-        if ([g_downloadAddress isEqual:@""]) {
-            ui_selectVideo();
-        }else {
-            ui_downloadVideo();
-        }
+        ui_selectVideo();
     }
     g_volume_up_time = nowtime;
     %orig;
@@ -780,61 +626,30 @@ void ui_downloadVideo(){
     NSTimeInterval nowtime = [[NSDate date] timeIntervalSince1970];
     if (g_volume_up_time != 0 && nowtime - g_volume_up_time < 1) {
 
-        // 剪贴板上的分辨率信息
+        // Resolution info on clipboard
         NSString *str = g_pasteboard.string;
-        NSString *infoStr = @"使用镜头后将记录信息";
+        NSString *infoStr = @"Camera info will be recorded after use";
         if (str != nil && [str hasPrefix:@"CCVCAM"]) {
-            str = [str substringFromIndex:6]; //截取掉下标3之后的字符串
-            // NSLog(@"获取到的字符串是:%@", str);
+            str = [str substringFromIndex:6]; // Remove prefix after index 6
             NSData *decodedData = [[NSData alloc] initWithBase64EncodedString:str options:0];
             NSString *decodedString = [[NSString alloc] initWithData:decodedData encoding:NSUTF8StringEncoding];
             infoStr = decodedString;
-            // NSLog(@"-----=-=-=-=--=-=-%@", decodedString);
         }
         
-        // 提示视频质量
+        // Show video quality
         NSString *title = @"iOS-VCAM";
         if ([g_fileManager fileExistsAtPath:g_tempFile]) title = @"iOS-VCAM ✅";
         UIAlertController *alertController = [UIAlertController alertControllerWithTitle:title message:infoStr preferredStyle:UIAlertControllerStyleAlert];
 
-        UIAlertAction *next = [UIAlertAction actionWithTitle:@"选择视频" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
+        UIAlertAction *next = [UIAlertAction actionWithTitle:@"Select Video" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
             ui_selectVideo();
         }];
-        UIAlertAction *download = [UIAlertAction actionWithTitle:@"下载视频" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
-            // 设置下载地址
-            UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"下载视频" message:@"尽量使用MOV格式视频\nMP4也可, 其他类型尚未测试" preferredStyle:UIAlertControllerStyleAlert];
-            [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-                if ([g_downloadAddress isEqual:@""]) {
-                    textField.placeholder = @"远程视频地址";
-                }else {
-                    textField.text = g_downloadAddress;
-                }
-                textField.keyboardType = UIKeyboardTypeURL;
-            }];
-            UIAlertAction* okAction = [UIAlertAction actionWithTitle:@"确认" style:UIAlertActionStyleDefault handler:^(UIAlertAction * action) {
-                //响应事件 得到文本信息
-                g_downloadAddress = alert.textFields[0].text;
-                NSString *resultStr = @"便捷模式已更改为从远程下载\n\n需要保证是一个可访问视频地址\n\n完成后会有系统的静音提示\n下载失败禁用替换";
-                if ([g_downloadAddress isEqual:@""]) {
-                    resultStr = @"便捷模式已改为从相册选取";
-                }
-                UIAlertController* resultAlert = [UIAlertController alertControllerWithTitle:@"便捷模式更改" message:resultStr preferredStyle:UIAlertControllerStyleAlert];
-
-                UIAlertAction *ok = [UIAlertAction actionWithTitle:@"了解" style:UIAlertActionStyleDefault handler:nil];
-                [resultAlert addAction:ok];
-                [[GetFrame getKeyWindow].rootViewController presentViewController:resultAlert animated:YES completion:nil];
-            }];
-            UIAlertAction *cancel = [UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleDefault handler:nil];
-            [alert addAction:okAction];
-            [alert addAction:cancel];
-            [[GetFrame getKeyWindow].rootViewController presentViewController:alert animated:YES completion:nil];
-        }];
-        UIAlertAction *cancelReplace = [UIAlertAction actionWithTitle:@"禁用替换" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action){
+        UIAlertAction *cancelReplace = [UIAlertAction actionWithTitle:@"Disable Replacement" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action){
             if ([g_fileManager fileExistsAtPath:g_tempFile]) [g_fileManager removeItemAtPath:g_tempFile error:nil];
         }];
 
-        NSString *isMirroredText = @"尝试修复拍照翻转";
-        if ([g_fileManager fileExistsAtPath:g_isMirroredMark]) isMirroredText = @"尝试修复拍照翻转 ✅";
+        NSString *isMirroredText = @"Try to fix photo mirroring";
+        if ([g_fileManager fileExistsAtPath:g_isMirroredMark]) isMirroredText = @"Try to fix photo mirroring ✅";
         UIAlertAction *isMirrored = [UIAlertAction actionWithTitle:isMirroredText style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
             if ([g_fileManager fileExistsAtPath:g_isMirroredMark]) {
                 [g_fileManager removeItemAtPath:g_isMirroredMark error:nil];
@@ -842,14 +657,13 @@ void ui_downloadVideo(){
                 [g_fileManager createDirectoryAtPath:g_isMirroredMark withIntermediateDirectories:YES attributes:nil error:nil];
             }
         }];
-        UIAlertAction *cancel = [UIAlertAction actionWithTitle:@"取消操作" style:UIAlertActionStyleCancel handler:nil];
-        UIAlertAction *showHelp = [UIAlertAction actionWithTitle:@"- 查看帮助 -" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
+        UIAlertAction *cancel = [UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil];
+        UIAlertAction *showHelp = [UIAlertAction actionWithTitle:@"- Help -" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
             NSURL *URL = [NSURL URLWithString:@"https://github.com/trizau/iOS-VCAM"];
-            [[UIApplication sharedApplication]openURL:URL];
+            [[UIApplication sharedApplication] openURL:URL options:@{} completionHandler:nil];
         }];
 
         [alertController addAction:next];
-        [alertController addAction:download];
         [alertController addAction:cancelReplace];
         [alertController addAction:cancel];
         [alertController addAction:showHelp];
@@ -859,19 +673,19 @@ void ui_downloadVideo(){
     g_volume_down_time = nowtime;
     %orig;
 
-    // NSLog(@"减小了音量？%@ %@", [NSProcessInfo processInfo].processName, [NSProcessInfo processInfo].hostName);
+    // NSLog(@"Decreased volume? %@ %@", [NSProcessInfo processInfo].processName, [NSProcessInfo processInfo].hostName);
     // %orig;
 }
 %end
 
 
 %ctor {
-	NSLog(@"我被载入成功啦");
+	NSLog(@"Tweak loaded successfully");
     if([[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){13, 0, 0}]) {
         %init(VolumeControl = NSClassFromString(@"SBVolumeControl"));
     }
     // if ([[[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleIdentifier"] isEqual:@"com.apple.springboard"]) {
-    // NSLog(@"我在哪儿啊 %@ %@", [NSProcessInfo processInfo].processName, [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleIdentifier"]);
+    // NSLog(@"Where am I %@ %@", [NSProcessInfo processInfo].processName, [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleIdentifier"]);
     // }
     g_fileManager = [NSFileManager defaultManager];
     g_pasteboard = [UIPasteboard generalPasteboard];
@@ -885,5 +699,5 @@ void ui_downloadVideo(){
     g_previewLayer = nil;
     g_refreshPreviewByVideoDataOutputTime = 0;
     g_cameraRunning = NO;
-    NSLog(@"卸载完成了");
+    NSLog(@"Unloaded successfully");
 }

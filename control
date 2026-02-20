@@ -1,9 +1,9 @@
 Package: com.if-she.cydia.vcam
 Name: VCAM4iOS
-Version: 0.0.1
+Version: 0.0.2
 Architecture: iphoneos-arm
 Description: VCAM4iOS
-Maintainer: trizau
-Author: trizau
+Maintainer: trizau/izmcm
+Author: trizau/izmcm
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000)
